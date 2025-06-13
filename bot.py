@@ -4,6 +4,7 @@ from flask import Flask, request
 import os
 from dotenv import load_dotenv
 import asyncio
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -11,7 +12,7 @@ load_dotenv()
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://comment-bot-6n4i.onrender.com")
-PORT = int(os.getenv("PORT", "10000"))  # Render uses PORT env variable
+PORT = int(os.getenv("PORT", "10000"))
 
 # Track muted users
 muted_users = set()
@@ -21,6 +22,7 @@ app = Flask(__name__)
 
 # Create Telegram bot application
 telegram_app = None
+webhook_setup_done = False
 
 async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Mute users who comment (reply to messages)."""
@@ -56,7 +58,11 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def setup_webhook():
     """Set webhook URL with Telegram."""
-    global telegram_app
+    global telegram_app, webhook_setup_done
+    
+    if webhook_setup_done:
+        return
+    
     telegram_app = Application.builder().token(BOT_TOKEN).build()
     telegram_app.add_handler(MessageHandler(filters.REPLY, handle_comment))
     
@@ -65,11 +71,28 @@ async def setup_webhook():
     webhook_url = f"{WEBHOOK_URL}/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
     print(f"✅ Webhook set to: {webhook_url}")
+    webhook_setup_done = True
+
+def setup_webhook_sync():
+    """Synchronous wrapper for webhook setup."""
+    asyncio.run(setup_webhook())
+
+@app.before_first_request
+def initialize_bot():
+    """Initialize bot before first request."""
+    if not webhook_setup_done:
+        thread = threading.Thread(target=setup_webhook_sync)
+        thread.start()
+        thread.join()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook requests."""
     try:
+        # Ensure bot is initialized
+        if telegram_app is None:
+            return "Bot not initialized", 500
+        
         # Get update from request
         update_data = request.get_json()
         update = Update.de_json(update_data, telegram_app.bot)
@@ -92,10 +115,13 @@ def home():
     """Home page."""
     return "Telegram Comment Ban Bot is running!", 200
 
+# Initialize webhook when module is imported
+if BOT_TOKEN and not webhook_setup_done:
+    try:
+        setup_webhook_sync()
+    except Exception as e:
+        print(f"Failed to setup webhook: {e}")
+
 if __name__ == "__main__":
-    # Set up webhook first
-    asyncio.run(setup_webhook())
-    
-    # Start Flask server
-    print(f"Starting server on port {PORT}...")
+    # For development only
     app.run(host="0.0.0.0", port=PORT, debug=False) 
