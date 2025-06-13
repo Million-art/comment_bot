@@ -236,8 +236,13 @@ def webhook():
         
         update = Update.de_json(update_data, telegram_app.bot)
         
-        # Process update
-        asyncio.run(telegram_app.process_update(update))
+        # Use new event loop to avoid "Event loop is closed" error
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(telegram_app.process_update(update))
+        finally:
+            loop.close()
         
         return "OK", 200
     except Exception as e:
@@ -253,16 +258,22 @@ def webhook_info():
         
     try:
         if telegram_app and telegram_app.bot:
-            webhook_info = asyncio.run(telegram_app.bot.get_webhook_info())
-            return {
-                "url": webhook_info.url,
-                "has_custom_certificate": webhook_info.has_custom_certificate,
-                "pending_update_count": webhook_info.pending_update_count,
-                "last_error_date": webhook_info.last_error_date,
-                "last_error_message": webhook_info.last_error_message,
-                "max_connections": webhook_info.max_connections,
-                "allowed_updates": webhook_info.allowed_updates
-            }, 200
+            # Use new event loop to avoid "Event loop is closed" error
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                webhook_info = loop.run_until_complete(telegram_app.bot.get_webhook_info())
+                return {
+                    "url": webhook_info.url,
+                    "has_custom_certificate": webhook_info.has_custom_certificate,
+                    "pending_update_count": webhook_info.pending_update_count,
+                    "last_error_date": webhook_info.last_error_date,
+                    "last_error_message": webhook_info.last_error_message,
+                    "max_connections": webhook_info.max_connections,
+                    "allowed_updates": webhook_info.allowed_updates
+                }, 200
+            finally:
+                loop.close()
         else:
             return {"error": "Bot not initialized"}, 500
     except Exception as e:
@@ -277,23 +288,29 @@ def reset_webhook():
         
     try:
         if telegram_app and telegram_app.bot:
-            # Delete webhook first to clear pending updates
-            asyncio.run(telegram_app.bot.delete_webhook(drop_pending_updates=True))
-            logger.info("🗑️ Deleted webhook and cleared pending updates")
-            
-            # Set webhook again
-            webhook_url = f"{WEBHOOK_URL}/webhook"
-            asyncio.run(telegram_app.bot.set_webhook(url=webhook_url))
-            logger.info(f"✅ Webhook reset to: {webhook_url}")
-            
-            # Get new webhook info
-            webhook_info = asyncio.run(telegram_app.bot.get_webhook_info())
-            return {
-                "message": "Webhook reset successfully",
-                "url": webhook_info.url,
-                "pending_update_count": webhook_info.pending_update_count,
-                "last_error_message": webhook_info.last_error_message
-            }, 200
+            # Use new event loop to avoid "Event loop is closed" error
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                # Delete webhook first to clear pending updates
+                loop.run_until_complete(telegram_app.bot.delete_webhook(drop_pending_updates=True))
+                logger.info("🗑️ Deleted webhook and cleared pending updates")
+                
+                # Set webhook again
+                webhook_url = f"{WEBHOOK_URL}/webhook"
+                loop.run_until_complete(telegram_app.bot.set_webhook(url=webhook_url))
+                logger.info(f"✅ Webhook reset to: {webhook_url}")
+                
+                # Get new webhook info
+                webhook_info = loop.run_until_complete(telegram_app.bot.get_webhook_info())
+                return {
+                    "message": "Webhook reset successfully",
+                    "url": webhook_info.url,
+                    "pending_update_count": webhook_info.pending_update_count,
+                    "last_error_message": webhook_info.last_error_message
+                }, 200
+            finally:
+                loop.close()
         else:
             return {"error": "Bot not initialized"}, 500
     except Exception as e:
