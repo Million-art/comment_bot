@@ -31,44 +31,68 @@ app = Flask(__name__)
 telegram_app = None
 webhook_setup_done = False
 
-async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Mute users who comment (reply to messages)."""
+async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle all messages for debugging and comment detection."""
     
-    # Only process replies in groups
-    if (not update.message or 
-        not update.message.reply_to_message or 
-        update.effective_chat.type not in ['group', 'supergroup'] or
-        update.effective_user.is_bot):
-        return
-    
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    user_key = (user_id, chat_id)
-    username = update.effective_user.username or "No username"
-    first_name = update.effective_user.first_name or "Unknown"
-    
-    logger.info(f"💬 Comment detected from user {first_name} (@{username}, ID: {user_id}) in chat {chat_id}")
-    
-    # Skip if already muted
-    if user_key in muted_users:
-        logger.info(f"⚠️ User {user_id} already muted in chat {chat_id}, skipping")
-        return
-    
-    try:
-        # Mute user permanently
-        await context.bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            permissions=ChatPermissions(can_send_messages=False)
-        )
+    # Log all incoming messages for debugging
+    if update.message:
+        user_id = update.effective_user.id if update.effective_user else "Unknown"
+        chat_id = update.effective_chat.id if update.effective_chat else "Unknown"
+        chat_type = update.effective_chat.type if update.effective_chat else "Unknown"
+        username = update.effective_user.username if update.effective_user else "No username"
+        first_name = update.effective_user.first_name if update.effective_user else "Unknown"
+        is_bot = update.effective_user.is_bot if update.effective_user else False
         
-        # Track muted user
-        muted_users.add(user_key)
+        logger.info(f"📨 Message received: User {first_name} (@{username}, ID: {user_id}) in chat {chat_id} (type: {chat_type})")
         
-        logger.info(f"🔇 Successfully muted user {first_name} (@{username}, ID: {user_id}) in chat {chat_id}")
+        # Check if it's a reply
+        if update.message.reply_to_message:
+            logger.info(f"🔄 REPLY detected from {first_name} (@{username}, ID: {user_id})")
+        else:
+            logger.info(f"💭 Regular message (not a reply) from {first_name}")
         
-    except Exception as e:
-        logger.error(f"❌ Failed to mute user {user_id} in chat {chat_id}: {e}")
+        # Check if user is a bot
+        if is_bot:
+            logger.info(f"🤖 Message from bot, ignoring")
+            return
+        
+        # Check chat type
+        if chat_type not in ['group', 'supergroup']:
+            logger.info(f"📱 Message from {chat_type}, not a group - ignoring")
+            return
+        
+        # Only process replies in groups
+        if not update.message.reply_to_message:
+            logger.info(f"💬 Not a reply message, ignoring")
+            return
+        
+        # This is a reply in a group from a non-bot user
+        user_key = (user_id, chat_id)
+        
+        logger.info(f"✅ Valid comment detected from user {first_name} (@{username}, ID: {user_id}) in chat {chat_id}")
+        
+        # Skip if already muted
+        if user_key in muted_users:
+            logger.info(f"⚠️ User {user_id} already muted in chat {chat_id}, skipping")
+            return
+        
+        try:
+            # Mute user permanently
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions=ChatPermissions(can_send_messages=False)
+            )
+            
+            # Track muted user
+            muted_users.add(user_key)
+            
+            logger.info(f"🔇 Successfully muted user {first_name} (@{username}, ID: {user_id}) in chat {chat_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to mute user {user_id} in chat {chat_id}: {e}")
+    else:
+        logger.info(f"📭 Update received but no message found")
 
 async def setup_webhook():
     """Set webhook URL with Telegram."""
@@ -78,7 +102,9 @@ async def setup_webhook():
         return
     
     telegram_app = Application.builder().token(BOT_TOKEN).build()
-    telegram_app.add_handler(MessageHandler(filters.REPLY, handle_comment))
+    
+    # Use ALL filter to catch all messages for debugging
+    telegram_app.add_handler(MessageHandler(filters.ALL, handle_all_messages))
     
     await telegram_app.initialize()
     
@@ -110,6 +136,8 @@ def webhook():
         
         # Get update from request
         update_data = request.get_json()
+        logger.info(f"🔗 Webhook received update: {update_data}")
+        
         update = Update.de_json(update_data, telegram_app.bot)
         
         # Process update
