@@ -1,15 +1,53 @@
 # Telegram Comment Ban Bot
 
-A focused Telegram bot that automatically and permanently mutes users who comment (reply to messages) in group chats.
+A production-ready Telegram bot that automatically mutes users who send messages in groups.
 
 ## Features
 
-- **Automatic Detection**: Monitors all reply messages (comments) in groups
-- **Permanent Muting**: Restricts users permanently after their first comment
-- **Clean Operation**: Shows a brief notification (comments are preserved)
-- **Group Focus**: Only works in groups and supergroups
-- **Dual Mode**: Supports both polling and webhook modes
-- **Admin Permissions**: Requires proper bot admin permissions
+- 🔇 **Auto-mute**: Mutes any user who sends a message in groups
+- 👑 **Admin protection**: Never mutes administrators or group creators
+- 💾 **Persistent storage**: Remembers muted users across restarts
+- ⚡ **Admin caching**: Efficient admin status checking with 24-hour cache
+- 🔒 **Secure endpoints**: Protected admin endpoints with token authentication
+- 📊 **Statistics**: Track muted users and cache performance
+- 🚀 **Production ready**: Optimized logging and error handling
+
+## Environment Variables
+
+Create a `.env` file with:
+
+```env
+BOT_TOKEN=your_telegram_bot_token
+WEBHOOK_URL=https://your-app.onrender.com
+PORT=10000
+ADMIN_TOKEN=your-secret-admin-token-change-this
+```
+
+## Deployment
+
+1. Deploy to Render using Gunicorn
+2. Set environment variables in Render dashboard
+3. Reset webhook: `GET /reset-webhook?token=your-admin-token`
+
+## Admin Endpoints
+
+All admin endpoints require `?token=your-admin-token`:
+
+- `/webhook-info?token=xxx` - View webhook status
+- `/reset-webhook?token=xxx` - Reset webhook and clear pending updates
+- `/stats?token=xxx` - View bot statistics
+
+## Files Created
+
+- `muted_users.json` - Persistent storage of muted users
+- `admin_cache.json` - Cache of admin status checks
+
+## Security Features
+
+- Admin endpoints protected with token authentication
+- Admin status cached to reduce API calls
+- Only processes text messages (ignores service messages)
+- Excludes bot commands from processing
 
 ## How It Works
 
