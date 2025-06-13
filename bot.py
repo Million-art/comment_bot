@@ -1,5 +1,6 @@
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from flask import Flask, request
 import os
 from dotenv import load_dotenv
 import asyncio
@@ -9,10 +10,17 @@ load_dotenv()
 
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://domain.com")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://comment-bot-6n4i.onrender.com")
+PORT = int(os.getenv("PORT", "10000"))  # Render uses PORT env variable
 
 # Track muted users
 muted_users = set()
+
+# Create Flask app
+app = Flask(__name__)
+
+# Create Telegram bot application
+telegram_app = None
 
 async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Mute users who comment (reply to messages)."""
@@ -55,22 +63,46 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def setup_webhook():
     """Set webhook URL with Telegram."""
-    app = Application.builder().token(BOT_TOKEN).build()
-    await app.initialize()
+    global telegram_app
+    telegram_app = Application.builder().token(BOT_TOKEN).build()
+    telegram_app.add_handler(MessageHandler(filters.REPLY, handle_comment))
+    
+    await telegram_app.initialize()
     
     webhook_url = f"{WEBHOOK_URL}/webhook"
-    await app.bot.set_webhook(url=webhook_url)
+    await telegram_app.bot.set_webhook(url=webhook_url)
     print(f"✅ Webhook set to: {webhook_url}")
-    print("Now deploy this bot to your server and handle POST requests to /webhook")
-    
-    await app.shutdown()
 
-def create_app():
-    """Create the application for deployment."""
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.REPLY, handle_comment))
-    return app
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming webhook requests."""
+    try:
+        # Get update from request
+        update_data = request.get_json()
+        update = Update.de_json(update_data, telegram_app.bot)
+        
+        # Process update
+        asyncio.run(telegram_app.process_update(update))
+        
+        return "OK", 200
+    except Exception as e:
+        print(f"Error processing update: {e}")
+        return "Error", 500
+
+@app.route('/health')
+def health():
+    """Health check endpoint."""
+    return "Bot is running", 200
+
+@app.route('/')
+def home():
+    """Home page."""
+    return "Telegram Comment Ban Bot is running!", 200
 
 if __name__ == "__main__":
-    print("Setting up webhook...")
-    asyncio.run(setup_webhook()) 
+    # Set up webhook first
+    asyncio.run(setup_webhook())
+    
+    # Start Flask server
+    print(f"Starting server on port {PORT}...")
+    app.run(host="0.0.0.0", port=PORT, debug=False) 
