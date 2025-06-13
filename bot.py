@@ -4,9 +4,17 @@ from flask import Flask, request
 import os
 from dotenv import load_dotenv
 import asyncio
+import logging
 
 # Load environment variables
 load_dotenv()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -36,9 +44,14 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     user_key = (user_id, chat_id)
+    username = update.effective_user.username or "No username"
+    first_name = update.effective_user.first_name or "Unknown"
+    
+    logger.info(f"💬 Comment detected from user {first_name} (@{username}, ID: {user_id}) in chat {chat_id}")
     
     # Skip if already muted
     if user_key in muted_users:
+        logger.info(f"⚠️ User {user_id} already muted in chat {chat_id}, skipping")
         return
     
     try:
@@ -52,8 +65,10 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Track muted user
         muted_users.add(user_key)
         
-    except Exception:
-        pass
+        logger.info(f"🔇 Successfully muted user {first_name} (@{username}, ID: {user_id}) in chat {chat_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to mute user {user_id} in chat {chat_id}: {e}")
 
 async def setup_webhook():
     """Set webhook URL with Telegram."""
@@ -69,7 +84,7 @@ async def setup_webhook():
     
     webhook_url = f"{WEBHOOK_URL}/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
-    print(f"✅ Webhook set to: {webhook_url}")
+    logger.info(f"✅ Webhook set to: {webhook_url}")
     webhook_setup_done = True
 
 def ensure_bot_initialized():
@@ -80,7 +95,7 @@ def ensure_bot_initialized():
         try:
             asyncio.run(setup_webhook())
         except Exception as e:
-            print(f"Failed to setup webhook: {e}")
+            logger.error(f"Failed to setup webhook: {e}")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -90,6 +105,7 @@ def webhook():
         ensure_bot_initialized()
         
         if telegram_app is None:
+            logger.error("Bot not initialized")
             return "Bot not initialized", 500
         
         # Get update from request
@@ -101,7 +117,7 @@ def webhook():
         
         return "OK", 200
     except Exception as e:
-        print(f"Error processing update: {e}")
+        logger.error(f"Error processing update: {e}")
         return "Error", 500
 
 @app.route('/health')
