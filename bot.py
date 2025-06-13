@@ -216,9 +216,14 @@ def ensure_bot_initialized():
         # Load persistent data first
         load_persistent_data()
         
-        # Setup webhook
-        asyncio.run(setup_webhook())
-        logger.info("✅ Bot initialization completed successfully")
+        # Setup webhook using new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(setup_webhook())
+            logger.info("✅ Bot initialization completed successfully")
+        finally:
+            loop.close()
     except Exception as e:
         logger.error(f"❌ Failed to setup webhook: {e}")
 
@@ -334,6 +339,32 @@ def stats():
 def health():
     """Health check endpoint."""
     return "Bot is running", 200
+
+@app.route('/test-async')
+def test_async():
+    """Test async functionality."""
+    # Security check
+    if request.args.get("token") != ADMIN_TOKEN:
+        return {"error": "Unauthorized"}, 403
+    
+    try:
+        if telegram_app and telegram_app.bot:
+            # Test async call
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                me = loop.run_until_complete(telegram_app.bot.get_me())
+                return {
+                    "status": "success",
+                    "bot_username": me.username,
+                    "bot_id": me.id
+                }, 200
+            finally:
+                loop.close()
+        else:
+            return {"error": "Bot not initialized"}, 500
+    except Exception as e:
+        return {"error": f"Test failed: {str(e)}"}, 500
 
 @app.route('/')
 def home():
