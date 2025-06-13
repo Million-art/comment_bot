@@ -124,40 +124,43 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.message:
         user = update.effective_user
         chat = update.effective_chat
-        user_id = user.id if user else "Unknown"
-        chat_id = chat.id if chat else "Unknown"
+        user_id = user.id if user else None
+        chat_id = chat.id if chat else None
         username = user.username or "No username"
         first_name = user.first_name or "Unknown"
         is_bot = user.is_bot if user else False
         chat_type = chat.type
 
+        # Skip bots
         if is_bot:
-            logger.debug(f"🤖 Bot message, skipping")
             return
 
+        # Only work in groups
         if chat_type not in ['group', 'supergroup']:
-            logger.debug(f"📱 Not a group chat, skipping")
             return
 
-        # Check if user is admin (with caching)
-        if await is_user_admin(context, user_id, chat_id):
-            logger.debug(f"👑 User {first_name} (@{username}) is admin, skipping")
-            return
+        # Check if user is admin - don't mute admins
+        try:
+            chat_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+            if chat_member.status in ['administrator', 'creator']:
+                return
+        except Exception:
+            pass  # If we can't check, proceed with muting
 
+        # Skip if already muted
         user_key = (user_id, chat_id)
-
         if user_key in muted_users:
-            logger.debug(f"⚠️ User {user_id} already muted, skipping")
             return
 
         try:
+            # Just mute the user - revoke send message permission
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=user_id,
                 permissions=ChatPermissions(can_send_messages=False)
             )
             muted_users.add(user_key)
-            save_muted_users()  # Persist immediately
+            save_muted_users()
             logger.info(f"🔇 Muted user {first_name} (@{username}) ID: {user_id} in chat {chat_id}")
         except Exception as e:
             logger.error(f"❌ Error muting user {user_id}: {e}")
