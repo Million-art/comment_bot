@@ -4,7 +4,6 @@ from flask import Flask, request
 import os
 from dotenv import load_dotenv
 import asyncio
-import threading
 
 # Load environment variables
 load_dotenv()
@@ -73,23 +72,23 @@ async def setup_webhook():
     print(f"✅ Webhook set to: {webhook_url}")
     webhook_setup_done = True
 
-def setup_webhook_sync():
-    """Synchronous wrapper for webhook setup."""
-    asyncio.run(setup_webhook())
-
-@app.before_first_request
-def initialize_bot():
-    """Initialize bot before first request."""
-    if not webhook_setup_done:
-        thread = threading.Thread(target=setup_webhook_sync)
-        thread.start()
-        thread.join()
+def ensure_bot_initialized():
+    """Ensure bot is initialized before processing requests."""
+    global telegram_app, webhook_setup_done
+    
+    if not webhook_setup_done and BOT_TOKEN:
+        try:
+            asyncio.run(setup_webhook())
+        except Exception as e:
+            print(f"Failed to setup webhook: {e}")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook requests."""
     try:
         # Ensure bot is initialized
+        ensure_bot_initialized()
+        
         if telegram_app is None:
             return "Bot not initialized", 500
         
@@ -115,12 +114,9 @@ def home():
     """Home page."""
     return "Telegram Comment Ban Bot is running!", 200
 
-# Initialize webhook when module is imported
-if BOT_TOKEN and not webhook_setup_done:
-    try:
-        setup_webhook_sync()
-    except Exception as e:
-        print(f"Failed to setup webhook: {e}")
+# Initialize webhook when module is imported (for Gunicorn)
+if BOT_TOKEN:
+    ensure_bot_initialized()
 
 if __name__ == "__main__":
     # For development only
