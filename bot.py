@@ -51,13 +51,6 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Track muted user
         muted_users.add(user_key)
         
-        # Send notification
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"🔇 {update.effective_user.mention_html()} muted for commenting.",
-            parse_mode="HTML"
-        )
-        
     except Exception:
         pass
 
