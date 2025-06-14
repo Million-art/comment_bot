@@ -37,6 +37,9 @@ application = Application.builder().token(BOT_TOKEN).build()
 # Track muted users
 muted_users = set()
 
+# global lock for handling race conditions (concurrent mute calls)
+mute_lock = asyncio.Lock()
+
 def load_muted_users():
     global muted_users
     try:
@@ -79,34 +82,35 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error checking admin status for user {user.id} in chat {chat.id}: {e}")
             return
         
-        # Skip if already muted
-        user_key = (user.id, chat.id)
-        if user_key in muted_users:
-            logger.debug(f"User {user.id} already muted in chat {chat.id}")
-            return
-        
-        # Mute the user
-        try:
-            await chat.restrict_member(
-                user.id,
-                permissions=ChatPermissions(
-                    can_send_messages=False,
-                    can_send_audios=False,
-                    can_send_documents=False,
-                    can_send_photos=False,
-                    can_send_videos=False,
-                    can_send_video_notes=False,
-                    can_send_voice_notes=False,
-                    can_send_polls=False,
-                    can_send_other_messages=False,
-                    can_add_web_page_previews=False
+        # Wrap the mute block inside an async with block using mute_lock.
+        async with mute_lock:
+            user_key = (user.id, chat.id)
+            if user_key in muted_users:
+                logger.debug(f"User {user.id} already muted in chat {chat.id}")
+                return
+            
+            # Mute the user
+            try:
+                await chat.restrict_member(
+                    user.id,
+                    permissions=ChatPermissions(
+                        can_send_messages=False,
+                        can_send_audios=False,
+                        can_send_documents=False,
+                        can_send_photos=False,
+                        can_send_videos=False,
+                        can_send_video_notes=False,
+                        can_send_voice_notes=False,
+                        can_send_polls=False,
+                        can_send_other_messages=False,
+                        can_add_web_page_previews=False
+                    )
                 )
-            )
-            muted_users.add(user_key)
-            save_muted_users()
-            logger.info(f"Successfully muted user {user.id} in chat {chat.id}")
-        except Exception as e:
-            logger.error(f"Error muting user {user.id} in chat {chat.id}: {e}")
+                muted_users.add(user_key)
+                save_muted_users()
+                logger.info(f"Successfully muted user {user.id} in chat {chat.id}")
+            except Exception as e:
+                logger.error(f"Error muting user {user.id} in chat {chat.id}: {e}")
             
     except Exception as e:
         logger.error(f"Unexpected error in mute_user handler: {e}")
@@ -208,11 +212,20 @@ def run_polling():
         loop.close()
 
 def run():
-    """Run the bot in the appropriate mode."""
+    """Run the bot in the appropriate mode (polling or webhook). In production (webhook mode), do not start Flask (Gunicorn will do that)."""
     try:
         if USE_WEBHOOK:
-            run_webhook()
+            # In production (webhook mode), we do not call app.run() (Gunicorn runs the Flask app).
+            # We only set the webhook (and log that the bot is ready).
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(setup_webhook())
+                logger.info("Bot (webhook mode) is ready. (Flask is served by Gunicorn.)")
+            finally:
+                loop.close()
         else:
+            # In polling mode, call run_polling() as before.
             run_polling()
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
