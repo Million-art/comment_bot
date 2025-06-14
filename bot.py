@@ -20,368 +20,205 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://comment-bot-6n4i.onrender.com")
-PORT = int(os.getenv("PORT", "10000"))
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "your-secret-admin-token")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", "8443"))
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 
-# Persistent storage files
-MUTED_USERS_FILE = "muted_users.json"
-ADMIN_CACHE_FILE = "admin_cache.json"
+if not BOT_TOKEN:
+    raise ValueError("No BOT_TOKEN provided in environment variables")
 
-# Track muted users and admin cache
-muted_users = set()
-admin_cache = {}  # {(user_id, chat_id): {"is_admin": bool, "expires": timestamp}}
-
-def load_persistent_data():
-    """Load muted users and admin cache from files."""
-    global muted_users, admin_cache
-    
-    # Load muted users
-    try:
-        if os.path.exists(MUTED_USERS_FILE):
-            with open(MUTED_USERS_FILE, 'r') as f:
-                data = json.load(f)
-                muted_users = set(tuple(item) for item in data)
-                logger.info(f"📂 Loaded {len(muted_users)} muted users from storage")
-    except Exception as e:
-        logger.error(f"❌ Failed to load muted users: {e}")
-        muted_users = set()
-    
-    # Load admin cache
-    try:
-        if os.path.exists(ADMIN_CACHE_FILE):
-            with open(ADMIN_CACHE_FILE, 'r') as f:
-                data = json.load(f)
-                # Convert string keys back to tuples and filter expired entries
-                current_time = datetime.now().timestamp()
-                admin_cache = {}
-                for key_str, value in data.items():
-                    if value["expires"] > current_time:
-                        key = tuple(map(int, key_str.strip("()").split(", ")))
-                        admin_cache[key] = value
-                logger.info(f"📂 Loaded {len(admin_cache)} admin cache entries")
-    except Exception as e:
-        logger.error(f"❌ Failed to load admin cache: {e}")
-        admin_cache = {}
-
-def save_muted_users():
-    """Save muted users to file."""
-    try:
-        with open(MUTED_USERS_FILE, 'w') as f:
-            json.dump(list(muted_users), f)
-        logger.debug(f"💾 Saved {len(muted_users)} muted users to storage")
-    except Exception as e:
-        logger.error(f"❌ Failed to save muted users: {e}")
-
-def save_admin_cache():
-    """Save admin cache to file."""
-    try:
-        # Convert tuple keys to strings for JSON serialization
-        data = {str(key): value for key, value in admin_cache.items()}
-        with open(ADMIN_CACHE_FILE, 'w') as f:
-            json.dump(data, f)
-        logger.debug(f"💾 Saved {len(admin_cache)} admin cache entries")
-    except Exception as e:
-        logger.error(f"❌ Failed to save admin cache: {e}")
-
-async def is_user_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int) -> bool:
-    """Check if user is admin with caching (24 hour cache)."""
-    cache_key = (user_id, chat_id)
-    current_time = datetime.now().timestamp()
-    
-    # Check cache first
-    if cache_key in admin_cache:
-        cache_entry = admin_cache[cache_key]
-        if cache_entry["expires"] > current_time:
-            logger.debug(f"🗂️ Admin status from cache for user {user_id}: {cache_entry['is_admin']}")
-            return cache_entry["is_admin"]
-    
-    # Cache miss or expired, check with Telegram
-    try:
-        chat_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        is_admin = chat_member.status in ['administrator', 'creator']
-        
-        # Cache for 24 hours
-        expires = current_time + (24 * 60 * 60)
-        admin_cache[cache_key] = {"is_admin": is_admin, "expires": expires}
-        save_admin_cache()
-        
-        logger.debug(f"🔍 Checked admin status for user {user_id}: {is_admin}")
-        return is_admin
-        
-    except Exception as e:
-        logger.warning(f"⚠️ Could not check admin status for user {user_id}: {e}")
-        return False  # Default to non-admin if check fails
-
-# Create Flask app
+# Initialize Flask
 app = Flask(__name__)
 
-# Create Telegram bot application
-telegram_app = None
-webhook_setup_done = False
+# Initialize Telegram bot
+application = Application.builder().token(BOT_TOKEN).build()
 
-async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message:
+# Track muted users
+muted_users = set()
+
+def load_muted_users():
+    global muted_users
+    try:
+        if os.path.exists("muted_users.json"):
+            with open("muted_users.json", "r") as f:
+                muted_users = set(tuple(item) for item in json.load(f))
+                logger.info(f"Loaded {len(muted_users)} muted users from storage")
+    except Exception as e:
+        logger.error(f"Failed to load muted users: {e}")
+
+def save_muted_users():
+    try:
+        with open("muted_users.json", "w") as f:
+            json.dump(list(muted_users), f)
+            logger.info(f"Saved {len(muted_users)} muted users to storage")
+    except Exception as e:
+        logger.error(f"Failed to save muted users: {e}")
+
+async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received update: {update}")
+    try:
         user = update.effective_user
         chat = update.effective_chat
-        user_id = user.id if user else None
-        chat_id = chat.id if chat else None
-        username = user.username or "No username"
-        first_name = user.first_name or "Unknown"
-        is_bot = user.is_bot if user else False
-        chat_type = chat.type
-
-        # Skip bots
-        if is_bot:
+        
+        if not user or not chat:
+            logger.warning("No user or chat found in update")
             return
-
-        # Only work in groups
-        if chat_type not in ['group', 'supergroup']:
+        
+        # Skip if not in a group
+        if chat.type not in ["group", "supergroup"]:
             return
-
-        # Check if user is admin - don't mute admins
+        
+        # Skip if user is admin
         try:
-            chat_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-            if chat_member.status in ['administrator', 'creator']:
+            member = await chat.get_member(user.id)
+            if member.status in ["administrator", "creator"]:
+                logger.debug(f"Skipping admin user {user.id} in chat {chat.id}")
                 return
-        except Exception:
-            pass  # If we can't check, proceed with muting
-
-        # Skip if already muted
-        user_key = (user_id, chat_id)
-        if user_key in muted_users:
+        except Exception as e:
+            logger.error(f"Error checking admin status for user {user.id} in chat {chat.id}: {e}")
             return
-
+        
+        # Skip if already muted
+        user_key = (user.id, chat.id)
+        if user_key in muted_users:
+            logger.debug(f"User {user.id} already muted in chat {chat.id}")
+            return
+        
+        # Mute the user
         try:
-            # Just mute the user - revoke send message permission
-            await context.bot.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-                permissions=ChatPermissions(can_send_messages=False)
+            await chat.restrict_member(
+                user.id,
+                permissions=ChatPermissions(
+                    can_send_messages=False,
+                    can_send_audios=False,
+                    can_send_documents=False,
+                    can_send_photos=False,
+                    can_send_videos=False,
+                    can_send_video_notes=False,
+                    can_send_voice_notes=False,
+                    can_send_polls=False,
+                    can_send_other_messages=False,
+                    can_add_web_page_previews=False
+                )
             )
             muted_users.add(user_key)
             save_muted_users()
-            logger.info(f"🔇 Muted user {first_name} (@{username}) ID: {user_id} in chat {chat_id}")
+            logger.info(f"Successfully muted user {user.id} in chat {chat.id}")
         except Exception as e:
-            logger.error(f"❌ Error muting user {user_id}: {e}")
-
-async def setup_webhook():
-    """Set webhook URL with Telegram."""
-    global telegram_app, webhook_setup_done
-    
-    if webhook_setup_done:
-        logger.debug("🔄 Webhook already setup, skipping")
-        return
-    
-    logger.info("🚀 Starting webhook setup...")
-    
-    telegram_app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Use TEXT filter to avoid service messages, exclude commands
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_messages))
-    
-    logger.info("📱 Initializing Telegram application...")
-    await telegram_app.initialize()
-    
-    webhook_url = f"{WEBHOOK_URL}/webhook"
-    logger.info(f"🔗 Setting webhook URL: {webhook_url}")
-    
-    try:
-        await telegram_app.bot.set_webhook(url=webhook_url)
-        logger.info(f"✅ Webhook successfully set to: {webhook_url}")
-        
-        # Get webhook info to verify
-        webhook_info = await telegram_app.bot.get_webhook_info()
-        logger.info(f"📊 Webhook info - URL: {webhook_info.url}, Pending updates: {webhook_info.pending_update_count}")
-        if webhook_info.last_error_message:
-            logger.warning(f"⚠️ Last webhook error: {webhook_info.last_error_message}")
-        
-        webhook_setup_done = True
-        
+            logger.error(f"Error muting user {user.id} in chat {chat.id}: {e}")
+            
     except Exception as e:
-        logger.error(f"❌ Failed to set webhook: {e}")
-        raise
+        logger.error(f"Unexpected error in mute_user handler: {e}")
 
-def ensure_bot_initialized():
-    """Ensure bot is initialized before processing requests."""
-    global telegram_app, webhook_setup_done
-    
-    if webhook_setup_done:
-        logger.debug("✅ Bot already initialized")
-        return
-        
-    if not BOT_TOKEN:
-        logger.error("❌ No BOT_TOKEN provided")
-        return
-        
-    logger.info("🔧 Bot not initialized, starting setup...")
-    try:
-        # Load persistent data first
-        load_persistent_data()
-        
-        # Setup webhook using new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(setup_webhook())
-            logger.info("✅ Bot initialization completed successfully")
-        finally:
-            loop.close()
-    except Exception as e:
-        logger.error(f"❌ Failed to setup webhook: {e}")
+# Add handler for all message types
+application.add_handler(MessageHandler(
+    filters.ChatType.GROUPS & ~filters.COMMAND,
+    mute_user
+))
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Handle incoming webhook requests."""
-    try:
-        if telegram_app is None:
-            logger.error("Bot not initialized")
-            return "Bot not initialized", 500
-        
-        # Get update from request
-        update_data = request.get_json()
-        logger.debug(f"🔗 Webhook received update")
-        
-        update = Update.de_json(update_data, telegram_app.bot)
-        
-        # Use new event loop to avoid "Event loop is closed" error
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(telegram_app.process_update(update))
-        finally:
-            loop.close()
-        
-        return "OK", 200
-    except Exception as e:
-        logger.error(f"Error processing update: {e}")
-        return "Error", 500
-
-@app.route('/webhook-info')
-def webhook_info():
-    """Get webhook info from Telegram."""
-    # Security check
-    if request.args.get("token") != ADMIN_TOKEN:
-        return {"error": "Unauthorized"}, 403
-        
-    try:
-        if telegram_app and telegram_app.bot:
-            # Use new event loop to avoid "Event loop is closed" error
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                webhook_info = loop.run_until_complete(telegram_app.bot.get_webhook_info())
-                return {
-                    "url": webhook_info.url,
-                    "has_custom_certificate": webhook_info.has_custom_certificate,
-                    "pending_update_count": webhook_info.pending_update_count,
-                    "last_error_date": webhook_info.last_error_date,
-                    "last_error_message": webhook_info.last_error_message,
-                    "max_connections": webhook_info.max_connections,
-                    "allowed_updates": webhook_info.allowed_updates
-                }, 200
-            finally:
-                loop.close()
-        else:
-            return {"error": "Bot not initialized"}, 500
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-@app.route('/reset-webhook')
-def reset_webhook():
-    """Reset webhook and clear pending updates."""
-    # Security check
-    if request.args.get("token") != ADMIN_TOKEN:
-        return {"error": "Unauthorized"}, 403
-        
-    try:
-        if telegram_app and telegram_app.bot:
-            # Use new event loop to avoid "Event loop is closed" error
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                # Delete webhook first to clear pending updates
-                loop.run_until_complete(telegram_app.bot.delete_webhook(drop_pending_updates=True))
-                logger.info("🗑️ Deleted webhook and cleared pending updates")
-                
-                # Set webhook again
-                webhook_url = f"{WEBHOOK_URL}/webhook"
-                loop.run_until_complete(telegram_app.bot.set_webhook(url=webhook_url))
-                logger.info(f"✅ Webhook reset to: {webhook_url}")
-                
-                # Get new webhook info
-                webhook_info = loop.run_until_complete(telegram_app.bot.get_webhook_info())
-                return {
-                    "message": "Webhook reset successfully",
-                    "url": webhook_info.url,
-                    "pending_update_count": webhook_info.pending_update_count,
-                    "last_error_message": webhook_info.last_error_message
-                }, 200
-            finally:
-                loop.close()
-        else:
-            return {"error": "Bot not initialized"}, 500
-    except Exception as e:
-        logger.error(f"❌ Failed to reset webhook: {e}")
-        return {"error": str(e)}, 500
-
-@app.route('/stats')
-def stats():
-    """Get bot statistics."""
-    # Security check
-    if request.args.get("token") != ADMIN_TOKEN:
-        return {"error": "Unauthorized"}, 403
-        
-    return {
-        "muted_users_count": len(muted_users),
-        "admin_cache_count": len(admin_cache),
-        "webhook_setup": webhook_setup_done
-    }, 200
-
-@app.route('/health')
-def health():
-    """Health check endpoint."""
-    return "Bot is running", 200
-
-@app.route('/test-async')
-def test_async():
-    """Test async functionality."""
-    # Security check
-    if request.args.get("token") != ADMIN_TOKEN:
-        return {"error": "Unauthorized"}, 403
-    
-    try:
-        if telegram_app and telegram_app.bot:
-            # Test async call
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                me = loop.run_until_complete(telegram_app.bot.get_me())
-                return {
-                    "status": "success",
-                    "bot_username": me.username,
-                    "bot_id": me.id
-                }, 200
-            finally:
-                loop.close()
-        else:
-            return {"error": "Bot not initialized"}, 500
-    except Exception as e:
-        return {"error": f"Test failed: {str(e)}"}, 500
+# Add a fallback handler to log any missed messages
+def log_unhandled(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.warning(f"Unhandled update: {update}")
+application.add_handler(MessageHandler(filters.ALL, log_unhandled))
 
 @app.route('/')
 def home():
-    """Home page."""
-    return "Telegram Comment Ban Bot is running!", 200
+    return "Bot is running!"
 
-# Initialize webhook when module is imported (for Gunicorn)
-if BOT_TOKEN:
-    logger.info("🚀 Starting bot initialization on module import...")
-    ensure_bot_initialized()
-    logger.info("📡 Bot module loaded and ready")
-else:
-    logger.error("❌ BOT_TOKEN not found in environment variables")
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    if request.method == "POST":
+        try:
+            update = Update.de_json(request.get_json(), application.bot)
+            await application.process_update(update)
+            return "ok", 200
+        except Exception as e:
+            logger.error(f"Error processing webhook update: {e}")
+            return "error", 500
+    return "Method not allowed", 405
+
+@app.route('/test-async')
+async def test_async():
+    """Test async functionality."""
+    if request.args.get("token") != ADMIN_TOKEN:
+        return {"error": "Unauthorized"}, 403
+    
+    try:
+        if application and application.bot:
+            me = await application.bot.get_me()
+            return {
+                "status": "success",
+                "bot_username": me.username,
+                "bot_id": me.id,
+                "webhook_enabled": USE_WEBHOOK
+            }, 200
+        else:
+            return {"error": "Bot not initialized"}, 500
+    except Exception as e:
+        logger.error(f"Test async endpoint error: {e}")
+        return {"error": f"Test failed: {str(e)}"}, 500
+
+async def setup_webhook():
+    """Set up webhook if enabled."""
+    if USE_WEBHOOK and WEBHOOK_URL:
+        try:
+            await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+            logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+            raise
+
+async def remove_webhook():
+    """Remove webhook if using polling."""
+    if not USE_WEBHOOK:
+        try:
+            await application.bot.delete_webhook()
+            logger.info("Webhook removed, using polling")
+        except Exception as e:
+            logger.error(f"Failed to remove webhook: {e}")
+            raise
+
+def run_webhook():
+    """Run the bot with webhook."""
+    load_muted_users()
+    
+    # Set up webhook
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(setup_webhook())
+        logger.info(f"Starting bot with webhook on port {PORT}")
+        app.run(host="0.0.0.0", port=PORT)
+    finally:
+        loop.close()
+
+def run_polling():
+    """Run the bot with polling."""
+    load_muted_users()
+    
+    # Remove webhook and start polling
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(remove_webhook())
+        logger.info("Starting bot with polling")
+        application.run_polling()
+    finally:
+        loop.close()
+
+def run():
+    """Run the bot in the appropriate mode."""
+    try:
+        if USE_WEBHOOK:
+            run_webhook()
+        else:
+            run_polling()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot stopped due to error: {e}")
+        raise
 
 if __name__ == "__main__":
-    # For development only
-    app.run(host="0.0.0.0", port=PORT, debug=False) 
+    run()
